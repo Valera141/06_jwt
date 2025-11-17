@@ -1,0 +1,40 @@
+schema {
+  query: Query
+  mutation: Mutation
+}
+type Query {
+  findAll: [StudentResponse]
+  findById(controlNumber:Int): StudentResponse
+}
+type Mutation {
+  create(req:StudentRequest): StudentResponse
+}
+type StudentResponse {
+  controlNumber: ID!
+  name: String!
+  lastname: String!
+  address: AddressResponse
+}
+type AddressResponse{
+  id: ID!
+  street: String!
+  number: String!
+  neighborhood: String!
+  postalCode: String!
+  city: String!
+  state: String!
+}
+# Input types
+input StudentRequest{
+  name: String!
+  lastname: String!
+  address: AddressRequest!
+}
+input AddressRequest{
+  street: String!
+  number: String!
+  neighborhood: String!
+  postalCode: String!
+  city: String!
+  state: String!
+}

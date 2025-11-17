@@ -1,0 +1,373 @@
+package itst.example.controller;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import itst.example.dto.StudentRequest;
+import itst.example.dto.StudentResponse;
+import itst.example.service.StudentService;
+import jakarta.persistence.EntityNotFoundException;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+
+import java.util.Collections;
+import java.util.List;
+
+import static org.hamcrest.Matchers.containsStringIgnoringCase;
+import static org.hamcrest.Matchers.hasSize;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+@WebMvcTest(controllers = StudentController.class)
+class StudentControllerTestV2WOJson {
+
+    @Autowired
+    MockMvc mvc;
+    @Autowired
+    ObjectMapper mapper;
+
+    // Se inyecta el mock definido en TestConfig
+    @Autowired
+    StudentService service;
+
+    private static final String BASE = "/api/v1/students";
+
+    @BeforeEach
+    void beforeEach() {
+        reset(service);
+    }
+
+    /*
+     * ===========================
+     * Config de test: mock beans
+     * ===========================
+     */
+    @TestConfiguration
+    static class TestConfig {
+        @Bean
+        StudentService studentService() {
+            return mock(StudentService.class);
+        }
+    }
+
+    /*
+     * ===========================
+     * Helpers DTO
+     * ===========================
+     */
+    private StudentResponse resp(int cn, String name, String lastname) {
+        StudentResponse r = new StudentResponse();
+        r.setControlNumber(cn);
+        r.setName(name);
+        r.setLastname(lastname);
+        return r;
+    }
+
+    private StudentRequest req(String name, String lastname) {
+        StudentRequest r = new StudentRequest();
+        r.setName(name);
+        r.setLastname(lastname);
+        return r;
+    }
+
+    /*
+     * ===========================
+     * GET /api/v1/students
+     * ===========================
+     */
+
+    @Test
+    @DisplayName("GET /api/v1/students → 200 con lista")
+    void findAll_ok() throws Exception {
+        // Doc: Caso de éxito con elementos
+        when(service.findAll()).thenReturn(List.of(resp(1, "Ana", "Pérez"), resp(2, "Luis", "Sánchez")));
+
+        mvc.perform(get(BASE).accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$", hasSize(2)))
+                .andExpect(jsonPath("$[0].controlNumber").value(1))
+                .andExpect(jsonPath("$[0].name").value("Ana"))
+                .andExpect(jsonPath("$[1].controlNumber").value(2));
+    }
+
+    @Test
+    @DisplayName("GET /api/v1/students → 200 con lista vacía")
+    void findAll_empty() throws Exception {
+        // Doc: Sin datos, devuelve 200 + []
+        when(service.findAll()).thenReturn(Collections.emptyList());
+
+        mvc.perform(get(BASE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(0)));
+    }
+
+    /*
+     * ==========================================
+     * GET /api/v1/students/pagination?page=&pageSize=
+     * ==========================================
+     */
+
+    @ParameterizedTest(name = "GET /pagination?page={0}&pageSize={1} → 200")
+    @CsvSource({
+            "0,10",
+            "1,1",
+            "2,50",
+            "5,5"
+    })
+    @DisplayName("GET paginado: parámetros válidos")
+    void pagination_ok(int page, int size) throws Exception {
+        // Doc: Parámetros correctos devuelven 200
+        when(service.findAll(page, size)).thenReturn(List.of(resp(100, "Eva", "Pérez")));
+
+        mvc.perform(get(BASE + "/pagination")
+                .queryParam("page", String.valueOf(page))
+                .queryParam("pageSize", String.valueOf(size))
+                .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].controlNumber").value(100))
+                .andExpect(jsonPath("$[0].name").value("Eva"));
+    }
+
+    @ParameterizedTest(name = "GET /pagination?page={0}&pageSize={1} inválidos → 400")
+    @CsvSource({
+            "-1,10",
+            "0,0",
+            "0,-5",
+            "-3,-3"
+    })
+    @DisplayName("GET paginado: parámetros inválidos → 400")
+    void pagination_badRequest(int page, int size) throws Exception {
+        // Doc: El servicio valida y lanza IllegalArgumentException → 400 (Advice)
+        when(service.findAll(page, size)).thenThrow(new IllegalArgumentException("Invalid paging params"));
+
+        mvc.perform(get(BASE + "/pagination")
+                .queryParam("page", String.valueOf(page))
+                .queryParam("pageSize", String.valueOf(size)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.error", containsStringIgnoringCase("invalid")));
+    }
+
+    /*
+     * ======================================
+     * GET /api/v1/students/{id}
+     * ======================================
+     */
+
+    @Test
+    @DisplayName("GET /{id} existente → 200")
+    void findById_ok() throws Exception {
+        // Doc: Caso de éxito por id
+        when(service.findById(7)).thenReturn(resp(7, "María", "Pérez"));
+
+        mvc.perform(get(BASE + "/{id}", 7))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.controlNumber").value(7))
+                .andExpect(jsonPath("$.name").value("María"));
+    }
+
+    @Test
+    @DisplayName("GET /{id} no existente → 404")
+    void findById_notFound() throws Exception {
+        // Doc: No encontrado → 404 (Advice)
+        when(service.findById(999)).thenThrow(new EntityNotFoundException("Student not found"));
+
+        mvc.perform(get(BASE + "/{id}", 999))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.status").value(404));
+    }
+
+    @Test
+    @DisplayName("GET /{id} no numérico → 400 (binding)")
+    void findById_badPath() throws Exception {
+        // Doc: Conversión fallida de path variable → 400
+        mvc.perform(get(BASE + "/abc"))
+                .andExpect(status().isBadRequest());
+    }
+
+    /*
+     * ==============================
+     * POST /api/v1/students
+     * ==============================
+     */
+
+    @Test
+    @DisplayName("POST create válido → 201 + Location + body")
+    void create_ok() throws Exception {
+        // Doc: Crea y devuelve Location EXACTA que hoy arma el controller
+        StudentRequest rq = req("María", "Pérez");
+        StudentResponse created = resp(1234, "María", "Pérez");
+        when(service.create(any(StudentRequest.class))).thenReturn(created);
+
+        mvc.perform(post(BASE)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(rq)))
+                .andExpect(status().isCreated())
+                .andExpect(header().string("Location", "/api/v1/students/1234"))
+                .andExpect(jsonPath("$.controlNumber").value(1234))
+                .andExpect(jsonPath("$.name").value("María"))
+                .andExpect(jsonPath("$.lastname").value("Pérez"));
+    }
+
+    @Test
+    @DisplayName("POST create inválido → 400 por @Valid")
+    void create_invalidBody() throws Exception {
+        // Doc: Body sin campos requeridos → 400 (MethodArgumentNotValidException)
+        mvc.perform(post(BASE)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400));
+    }
+
+    /*
+     * ==================================
+     * PUT /api/v1/students/{id}
+     * ==================================
+     */
+
+    @Test
+    @DisplayName("PUT update válido → 200 con body actualizado")
+    void update_ok() throws Exception {
+        // Doc: Actualización exitosa
+        StudentRequest rq = req("Nombre Editado", "Pérez");
+        StudentResponse updated = resp(55, "Nombre Editado", "Pérez");
+        when(service.update(eq(55), any(StudentRequest.class))).thenReturn(updated);
+
+        mvc.perform(put(BASE + "/{id}", 55)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(rq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.controlNumber").value(55))
+                .andExpect(jsonPath("$.name").value("Nombre Editado"));
+    }
+
+    @Test
+    @DisplayName("PUT update en no existente → 404")
+    void update_notFound() throws Exception {
+        // Doc: Servicio indica que no existe → 404
+        when(service.update(eq(9999), any(StudentRequest.class)))
+                .thenThrow(new EntityNotFoundException("Student not found"));
+
+        mvc.perform(put(BASE + "/{id}", 9999)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(req("X", "Pérez"))))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.status").value(404));
+    }
+
+    @Test
+    @DisplayName("PUT update con body inválido → 400 por @Valid")
+    void update_invalidBody() throws Exception {
+        // Doc: Falla de validación → 400
+        mvc.perform(put(BASE + "/{id}", 10)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400));
+    }
+
+    /*
+     * =====================================
+     * DELETE /api/v1/students/{id}
+     * =====================================
+     */
+
+    @Test
+    @DisplayName("DELETE existente → 204 sin body")
+    void delete_ok() throws Exception {
+        // Doc: Eliminación exitosa → 204
+        doNothing().when(service).delete(33);
+
+        mvc.perform(delete(BASE + "/{id}", 33))
+                .andExpect(status().isNoContent())
+                .andExpect(content().string(""));
+    }
+
+    @Test
+    @DisplayName("DELETE no existente → 404")
+    void delete_notFound() throws Exception {
+        // Doc: Recurso no existe → 404
+        doThrow(new EntityNotFoundException("Student not found")).when(service).delete(4040);
+
+        mvc.perform(delete(BASE + "/{id}", 4040))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.status").value(404));
+    }
+
+    /*
+     * =============================================
+     * GET /api/v1/students/search/{name}
+     * =============================================
+     */
+
+    @Test
+    @DisplayName("GET search con resultados → 200 y lista")
+    void search_ok() throws Exception {
+        // Doc: Búsqueda por nombre (case-insensitive parcial)
+        when(service.getStudentsByName("ana"))
+                .thenReturn(List.of(resp(1, "Ana", "Pérez"), resp(3, "Anabel", "Pérez")));
+
+        mvc.perform(get(BASE + "/search/{name}", "ana"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(2)))
+                .andExpect(jsonPath("$[0].name", containsStringIgnoringCase("ana")));
+    }
+
+    @Test
+    @DisplayName("GET search sin resultados → 200 y []")
+    void search_empty() throws Exception {
+        // Doc: Sin coincidencias → 200 y arreglo vacío
+        when(service.getStudentsByName("zzz")).thenReturn(Collections.emptyList());
+
+        mvc.perform(get(BASE + "/search/{name}", "zzz"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(0)));
+    }
+
+    /*
+     * =====================================
+     * Headers: CORS / Content Negotiation
+     * =====================================
+     */
+
+    @Test
+    @DisplayName("CORS: Access-Control-Allow-Origin")
+    void cors_header_present() throws Exception {
+        when(service.findAll()).thenReturn(Collections.emptyList());
+
+        mvc.perform(get(BASE).header("Origin", "https://tu-frontend.com").accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Access-Control-Allow-Origin", "https://tu-frontend.com"));
+    }
+
+    @Test
+    @DisplayName("Content negotiation: Accept JSON → application/json")
+    void contentNegotiation_json() throws Exception {
+        when(service.findAll()).thenReturn(List.of(resp(1, "A", "Pérez")));
+
+        mvc.perform(get(BASE).accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON));
+    }
+}
